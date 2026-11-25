@@ -1,6 +1,6 @@
 package sandbox.core;
 
-/** A quantity of difficulty, for the blocks to create (20261125T163700Z). */
+/** A quantity of difficulty, for the blocks to create (20261125T193608Z). */
 public final class Difficulty {
 
   public static final Difficulty ZERO = new Difficulty(0);
