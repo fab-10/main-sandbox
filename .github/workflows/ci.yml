@@ -1,0 +1,94 @@
+name: CI
+# A CI with the interface of Besu's CI workflow (its name, the run names, the triggers, the checks
+# input), whose checks take seconds, and fail only where a commit asks them to
+# (.github/ci-check.sh).
+run-name: ${{ github.event_name == 'workflow_dispatch' && format('CI ({0})', inputs.checks) || '' }}
+
+on:
+  pull_request:
+    branches:
+      - main
+      - release*
+      - 'rebase/**'
+  workflow_dispatch:
+    inputs:
+      checks:
+        description: 'fast: build and unit tests; full: every suite'
+        type: choice
+        options:
+          - full
+          - fast
+        default: full
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}${{ github.event_name == 'workflow_dispatch' && format('-{0}', github.run_id) || '' }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # how long each suite takes, in seconds: the repository variable CI_SECONDS, or 20
+  CI_SECONDS: ${{ vars.CI_SECONDS || '20' }}
+
+jobs:
+  testScope:
+    name: "Test scope"
+    runs-on: ubuntu-latest
+    outputs:
+      scope: ${{ steps.scope.outputs.scope }}
+    steps:
+      - name: Select the test suites to run
+        id: scope
+        env:
+          SCOPE: >-
+            ${{
+              ((github.event_name == 'workflow_dispatch' && inputs.checks != 'fast')
+                || (github.event_name == 'pull_request' && !startsWith(github.base_ref, 'rebase/')))
+              && 'full' || 'fast'
+            }}
+        run: echo "scope=$SCOPE" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: testScope
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - run: bash .github/ci-check.sh build
+
+  unitTests:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - run: bash .github/ci-check.sh unitTests
+
+  integrationTests:
+    needs: [testScope, build]
+    if: needs.testScope.outputs.scope == 'full'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - run: bash .github/ci-check.sh integrationTests
+
+  acceptanceTests:
+    needs: [testScope, build]
+    if: needs.testScope.outputs.scope == 'full'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - run: bash .github/ci-check.sh acceptanceTests
+
+  allTestsPassed:
+    needs: [testScope, build, unitTests, integrationTests, acceptanceTests]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Every suite of the scope passed
+        env:
+          SCOPE: ${{ needs.testScope.outputs.scope }}
+          RESULTS: ${{ needs.build.result }} ${{ needs.unitTests.result }}
+          FULL: ${{ needs.integrationTests.result }} ${{ needs.acceptanceTests.result }}
+        run: |
+          [ "$SCOPE" = full ] && RESULTS="$RESULTS $FULL"
+          for r in $RESULTS; do [ "$r" = success ] || { echo "a suite ended: $r"; exit 1; }; done
